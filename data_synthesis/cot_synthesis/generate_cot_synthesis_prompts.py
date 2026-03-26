@@ -1,5 +1,6 @@
 import json
 import re
+import argparse
 
 from tqdm import tqdm
 
@@ -11,7 +12,13 @@ def remove_sql_comments(sql):
     return sql.strip()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=0, help="0 means no limit")
+    opt = parser.parse_args()
+
     dataset = json.load(open("../question_synthesis/results/question_and_sql_pairs.json"))
+    if opt.limit > 0:
+        dataset = dataset[:opt.limit]
     tables = json.load(open("../database_synthesis/tables.json"))
     print("len(tables):", len(tables))
     

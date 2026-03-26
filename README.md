@@ -165,5 +165,137 @@ print(response)
 ## Limitations
 SynSQL-2.5M is an English dataset focused on the SQLite database engine, so its performance in multi-language and multi-SQL dialect scenarios may be limited. However, you can synthesize new data samples using our proposed framework to suit your scenarios. After synthesizing a new dataset, you can use OmniSQL for further fine-tuning, as it is a strong starting point for text-to-SQL capabilities.
 
-## Contact
-If you have any questions, we encourage you to either create Github issues or get in touch with Haoyang Li at lihaoyang.cs@ruc.edu.cn.
+## Vietnamese SynSQL-mini (với CoT) dùng DeepSeek
+Dự án này bao gồm một framework tổng hợp dữ liệu (`data_synthesis/`) theo pipeline tiến 4 bước:
+`web table -> cơ sở dữ liệu tổng hợp -> SQL -> câu hỏi tiếng Việt -> CoT tiếng Việt`.
+
+Để chạy thử nhanh (pilot/prototyping), bạn có thể dùng script mini runner `run_vi_mini.sh` để tự động hóa toàn bộ 4 bước:
+1) Tổng hợp database (Bước 1)
+2) Tổng hợp SQL + hậu xử lý (Bước 2)
+3) Tổng hợp câu hỏi tiếng Việt theo style + hậu xử lý (Bước 3)
+4) Tổng hợp CoT + hậu xử lý (Bước 4)
+
+### Yêu cầu
+- Môi trường Python ảo: `./.venv`
+- Khóa API DeepSeek: đặt biến môi trường `DEEPSEEK_API_KEY`
+
+Các biến môi trường tùy chọn để chạy pilot nhanh hơn:
+- `DEEPSEEK_MAX_TOKENS`
+- `DEEPSEEK_SCHEMA_MAX_TOKENS`
+- `DEEPSEEK_ENHANCE_MAX_TOKENS`
+- `DEEPSEEK_RETRIES`
+- `DEEPSEEK_RETRY_SLEEP_SEC`
+
+### Chạy pipeline (Mini)
+```bash
+cd /Users/doduy/PycharmProjects/OmniSQL
+source .venv/bin/activate
+export DEEPSEEK_API_KEY="sk-..."
+
+# Cách dùng:
+#   ./run_vi_mini.sh [MAX_TABLES] [MAX_DBS] [SAMPLES_PER_TABLE] [Q_LIMIT] [COT_LIMIT]
+./run_vi_mini.sh 5 5 3 30 15
+```
+
+Lưu ý: `data_synthesis/database_synthesis/web_tables.json` có thể vẫn để tiếng Anh; chính prompt/template ở các bước sau sẽ “ép” đầu ra được tạo ra sang tiếng Việt (domain/scenario/câu hỏi/CoT).
+
+### Pipeline cụ thể (Input -> Xử lý -> Output)
+Tất cả artifact trung gian được lưu dưới thư mục `data_synthesis/`.
+
+#### Bước 1: Web table -> CSDL tổng hợp (synthetic DB)
+- Thư mục làm việc: `data_synthesis/database_synthesis`
+- Chạy các script:
+  - `generate_schema_synthesis_prompts.py`
+  - `synthesize_schema.py`
+  - `generate_schema_enhancement_prompts.py`
+  - `enhance_schema.py`
+  - `build_sqlite_databases.py`
+  - `generate_tables_json.py`
+- Input chính:
+  - `data_synthesis/database_synthesis/web_tables.json`
+  - Prompt/template:
+    - `data_synthesis/database_synthesis/prompt_templates/schema_prompt.txt`
+    - `data_synthesis/database_synthesis/prompt_templates/enhance_prompt.txt`
+  - Kết quả từ bước tổng hợp schema (JSON)
+- Output chính:
+  - Prompt (tạm thời): `data_synthesis/database_synthesis/prompts/`
+  - Output schema (đã parse):
+    - `data_synthesis/database_synthesis/results/schema_synthesis.json`
+    - `data_synthesis/database_synthesis/results/schema_enhancement.json`
+  - SQLite DB:
+    - `data_synthesis/database_synthesis/synthetic_sqlite_databases/<db_id>/<db_id>.sqlite`
+  - DDL/metadata dùng cho downstream step:
+    - `data_synthesis/database_synthesis/tables.json`
+    - Trong `tables.json`, trường quan trọng nhất là `ddls` (một danh sách các câu `CREATE TABLE ...` cho mỗi `db_id`).
+
+#### Bước 2: Synthetic DB -> SQL
+- Thư mục làm việc: `data_synthesis/sql_synthesis`
+- Chạy các script:
+  - `generate_sql_synthesis_prompts.py`
+  - `synthesize_sql.py`
+  - `post_process_sqls.py`
+- Input chính:
+  - SQLite DB ở:
+    - `data_synthesis/database_synthesis/synthetic_sqlite_databases/`
+  - Prompt/template:
+    - `data_synthesis/sql_synthesis/prompt_templates/sql_synthesis_prompt.txt` (và các prompt liên quan trong `prompt_templates/`)
+  - Output LLM ở `./results/sql_synthesis.json` (nếu có)
+- Output chính:
+  - `data_synthesis/sql_synthesis/results/synthetic_sqls.json`
+  - Đây là danh sách các SQL đã qua lọc/thực thi/khử trùng lặp (dedup). Format cụ thể là `list[dict]`, tối thiểu gồm `db_id`, `sql`, và `complexity` (độ phức tạp SQL).
+  - Nếu bạn muốn phủ đều theo bảng, bạn có thể chạy generator theo chế độ “mỗi bảng N sample” thông qua tham số `--samples_per_table` (mini runner đã dùng tham số này ở vị trí thứ 3).
+
+#### Bước 3: SQL -> Câu hỏi tiếng Việt + style
+- Thư mục làm việc: `data_synthesis/question_synthesis`
+- Chạy các script:
+  - `generate_question_synthesis_prompts.py`
+  - `synthesize_question.py`
+  - `post_process_questions.py`
+- Input chính:
+  - `data_synthesis/sql_synthesis/results/synthetic_sqls.json` (từ Bước 2)
+  - Schema/DDL và metadata cột lấy trực tiếp từ các DB sqlite trong Bước 1
+  - Prompt/template câu hỏi nằm trong:
+    - `data_synthesis/question_synthesis/prompt_templates/`
+- Output chính:
+  - Raw question generations:
+    - `data_synthesis/question_synthesis/results/question_synthesis.json`
+  - Final question/SQL pairs:
+    - `data_synthesis/question_synthesis/results/question_and_sql_pairs.json`
+  - Format là `list[dict]` với các field quan trọng:
+    - `db_id`
+    - `sql`
+    - `sql_complexity` (ban đầu theo nhãn tiếng Anh như `Simple`, `Moderate`, ...)
+    - `question_style` (ban đầu theo nhãn tiếng Anh như `Formal`, `Colloquial`, ...)
+    - `question` (tiếng Việt)
+    - `external_knowledge` (chuỗi rỗng `""` nếu không có)
+
+#### Bước 4: (DB, question, SQL) -> CoT tiếng Việt
+- Thư mục làm việc: `data_synthesis/cot_synthesis`
+- Chạy các script:
+  - `generate_cot_synthesis_prompts.py`
+  - `synthesize_cot.py`
+  - `post_process_cot.py`
+- Input chính:
+  - `data_synthesis/question_synthesis/results/question_and_sql_pairs.json` (đầu vào câu hỏi + SQL)
+  - `data_synthesis/database_synthesis/tables.json` (dùng để lấy `ddls`/`schema` cho từng `db_id`)
+- Output chính:
+  - CoT generations (raw, trước khi major voting):
+    - `data_synthesis/cot_synthesis/results/cot_synthesis.json`
+  - Final dataset (mini SynSQL-like, đã major voting):
+    - `data_synthesis/cot_synthesis/results/synthetic_text2sql_dataset.json`
+  - Format: `list[dict]` với tối thiểu các field sau:
+    - `db_id`: `str`
+    - `sql_complexity`: nhãn tiếng Việt (đã được map từ `Simple/Moderate/...`)
+    - `question_style`: nhãn tiếng Việt (đã được map từ `Formal/Colloquial/...`)
+    - `question`: `str`
+    - `external_knowledge`: `str` (thường là `""` nếu không dùng)
+    - `cot`: `str` (CoT markdown, có thể chứa code block ```sql ... ``` bên trong)
+    - `sql`: `str` (SQL SQLite cuối cùng)
+    - `schema`: `str` (chuỗi DDL `CREATE TABLE ...` ghép từ `tables.json`)
+
+Mẹo: Nếu bạn đã tạo `synthetic_text2sql_dataset.json` trước khi chỉnh pipeline để thêm `schema`/dịch nhãn, bạn có thể chạy thêm:
+- `data_synthesis/cot_synthesis/augment_text2sql_dataset.py`
+để cập nhật file output hiện có cho khớp format SynSQL trên Hugging Face.
+
+## Liên hệ
+Nếu bạn có câu hỏi, bạn có thể tạo Github issues hoặc liên hệ Haoyang Li qua email `lihaoyang.cs@ruc.edu.cn`.

@@ -8,6 +8,7 @@ import multiprocessing as mp
 import sys
 import ijson
 import random
+from pathlib import Path
 
 def parse_response(response):
     pattern = r"```sql\s*(.*?)\s*```"
@@ -68,15 +69,70 @@ def load_json_file(file):
     return dataset
 
 if __name__ == "__main__":
-    results = load_json_file("./results/cot_synthesis.json")
+    base_dir = Path(__file__).resolve().parent
+    results_path = base_dir / "results" / "cot_synthesis.json"
+    output_path = base_dir / "results" / "synthetic_text2sql_dataset.json"
+
+    results = load_json_file(str(results_path))
     
-    sampling_num = len(results[0]["responses"])
-    print("sampling_num:", sampling_num)
+    if len(results) == 0:
+        print("No CoT synthesis results found; writing empty dataset.")
+        with open("results/synthetic_text2sql_dataset.json", "w", encoding="utf-8") as f:
+            f.write(json.dumps([], ensure_ascii=False, indent=2))
+        raise SystemExit(0)
+
+    response_lens = [len(r.get("responses", [])) for r in results]
+    if min(response_lens) == 0:
+        print("Some CoT samples have 0 responses; truncating to min>0 may not be possible.")
+        # Filter out samples with empty responses to keep voting stable.
+        results = [r for r in results if len(r.get("responses", [])) > 0]
+        response_lens = [len(r.get("responses", [])) for r in results]
+
+    sampling_num = min(response_lens)
+    print("sampling_num (min responses across samples):", sampling_num)
+
+    # Ensure each sample has exactly sampling_num responses.
+    for r in results:
+        r["responses"] = r["responses"][:sampling_num]
 
     # execution results-guided major voting
     major_voting_filter_num = 0
     major_voting_results = []
     process_batch_size = 10240
+
+    # Build schema map for all db_ids appearing in cot_synthesis.json.
+    # `tables.json` stores `ddls` (CREATE TABLE statements) for each `db_id`.
+    sql_complexity_map = {
+        "Simple": "Đơn giản",
+        "Moderate": "Trung bình",
+        "Complex": "Phức tạp",
+        "Highly Complex": "Rất phức tạp",
+    }
+    question_style_map = {
+        "Colloquial": "Khẩu ngữ",
+        "Formal": "Trang trọng",
+        "Interrogative": "Nghi vấn",
+        "Vague": "Mơ hồ",
+        "Descriptive": "Miêu tả",
+        "Multi-turn Dialogue": "Hội thoại nhiều lượt",
+        "Imperative": "Mệnh lệnh",
+        "Concise": "Ngắn gọn",
+        "Metaphorical": "Ẩn dụ",
+    }
+
+    needed_db_ids = set(r["db_id"] for r in results if "db_id" in r)
+    tables_path = base_dir.parent / "database_synthesis" / "tables.json"
+    db_id2schema = {}
+    if tables_path.exists():
+        tables = json.load(open(str(tables_path), "r", encoding="utf-8"))
+        for t in tables:
+            db_id = t.get("db_id")
+            if db_id in needed_db_ids and "ddls" in t:
+                db_id2schema[db_id] = "\n\n".join(t["ddls"])
+    else:
+        print(f"[WARN] tables.json not found at: {tables_path}")
+
+    missing_schema_db_ids = []
 
     for pred_idx in tqdm(range(0, len(results), process_batch_size)):
         batch_cot_results = results[pred_idx: pred_idx + process_batch_size]
@@ -123,16 +179,24 @@ if __name__ == "__main__":
             major_voting_results.append(
                 {
                     "db_id": cot_result["db_id"],
-                    "sql_complexity": cot_result["sql_complexity"],
-                    "question_style": cot_result["question_style"],
+                    "sql_complexity": sql_complexity_map.get(cot_result["sql_complexity"], cot_result["sql_complexity"]),
+                    "question_style": question_style_map.get(cot_result["question_style"], cot_result["question_style"]),
                     "question": cot_result["question"],
                     "external_knowledge": cot_result["external_knowledge"],
                     "cot": final_cot,
-                    "sql": parse_response(final_cot)
+                    "sql": parse_response(final_cot),
+                    # Required by SynSQL-2.5M format on HF: a single string containing CREATE TABLE statements.
+                    "schema": db_id2schema.get(cot_result["db_id"], "")
                 }
             )
+            if cot_result["db_id"] not in db_id2schema:
+                missing_schema_db_ids.append(cot_result["db_id"])
     print("major_voting_filter_num:", major_voting_filter_num)
     print("num of data samples (after execution-based major voting):", len(major_voting_results))
+    if missing_schema_db_ids:
+        # de-dup for readability
+        missing_unique = sorted(set(missing_schema_db_ids))
+        print(f"[WARN] Missing schema for {len(missing_unique)} db_id(s): {missing_unique[:5]}{'...' if len(missing_unique) > 5 else ''}")
     
-    with open("results/synthetic_text2sql_dataset.json", "w", encoding="utf-8") as f:
+    with open(str(output_path), "w", encoding="utf-8") as f:
         f.write(json.dumps(major_voting_results, ensure_ascii=False, indent=2))

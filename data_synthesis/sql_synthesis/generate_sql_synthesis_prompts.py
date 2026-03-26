@@ -3,31 +3,32 @@ import os
 import random
 import sqlite3
 import numpy as np
+import argparse
 
 from tqdm import tqdm
 
 sql_func_template = '''
 ### SQL Functions
-You may consider one or more of the following SQL functions while generating the query:
+Bạn có thể cân nhắc một hoặc nhiều SQL function sau khi tạo câu truy vấn:
 {sql_funcs}
-Important tips:
-Except for the functions listed above, you may use any other functions as long as they conform to the syntax of the database engine.
+Lưu ý quan trọng:
+Ngoài các function liệt kê ở trên, bạn có thể dùng các function khác miễn là tuân theo syntax của hệ quản trị cơ sở dữ liệu.
 '''
 
 insert_stmts_template = '''
 ### INSERT INTO Statements
-Below are several `INSERT INTO` statements. Use these to help generate predicates (i.e., `WHERE` clauses) in your SQL query:
+Bên dưới là một số câu lệnh `INSERT INTO`. Hãy dùng chúng để hỗ trợ tạo điều kiện lọc (tức mệnh đề `WHERE`) trong câu SQL của bạn:
 
 {insert_statements}
 '''
 
-simple_criterion = '''**Criteria:**
-Simple SQL queries may satisfy one or more of the following criteria:
-- Simple queries should select data from a single table only.
-- Basic aggregate functions are permitted, such as `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`.
-- No joins are allowed; the query must operate on a single table.
+simple_criterion = '''**Tiêu chí:**
+SQL mức Simple có thể thỏa một hoặc nhiều điều kiện sau:
+- Truy vấn chỉ lấy dữ liệu từ một bảng duy nhất.
+- Có thể dùng các hàm tổng hợp cơ bản như `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`.
+- Không dùng JOIN; truy vấn phải hoạt động trên một bảng.
 
-**Example of Simple SQL Query:**
+**Ví dụ SQL mức Simple:**
 ```sql
 SELECT name, department_name
 FROM employees
@@ -35,16 +36,16 @@ WHERE level > 5
 ORDER BY age DESC;
 ```'''
 
-moderate_criterion = '''**Criteria:**
-Moderate SQL queries may satisfy one or more of the following criteria:
-- Involves table joins, such as `JOIN`, `INNER JOIN`, `LEFT JOIN`, `CROSS JOIN`, etc.
-- Includes subqueries within the `SELECT` or `WHERE` clauses.
-- Utilizes aggregate functions alongside a `GROUP BY` clause.
-- Contains complex `WHERE` conditions, including `IN`, `BETWEEN`, `LIKE`.
-- Incorporate a `HAVING` clause to filter aggregated results.
-- Uses aggregate functions like `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, etc.
+moderate_criterion = '''**Tiêu chí:**
+SQL mức Moderate có thể thỏa một hoặc nhiều điều kiện sau:
+- Có JOIN giữa các bảng, như `JOIN`, `INNER JOIN`, `LEFT JOIN`, `CROSS JOIN`, v.v.
+- Có subquery trong mệnh đề `SELECT` hoặc `WHERE`.
+- Dùng hàm tổng hợp cùng với mệnh đề `GROUP BY`.
+- Có điều kiện `WHERE` phức tạp, gồm `IN`, `BETWEEN`, `LIKE`.
+- Có mệnh đề `HAVING` để lọc kết quả tổng hợp.
+- Dùng các hàm tổng hợp như `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, v.v.
 
-**Example of Moderate SQL Query:**
+**Ví dụ SQL mức Moderate:**
 ```sql
 SELECT e.name, d.department_name, AVG(s.salary) AS average_salary
 FROM employees e
@@ -55,17 +56,17 @@ GROUP BY e.name, d.department_name
 HAVING AVG(s.salary) > 50000;
 ```'''
 
-complex_criterion = '''**Criteria:**
-Complex SQL queries may satisfy one or more of the following criteria:
-- Contains complex nested subqueries.
-- Utilizes multiple types of joins, including self-joins.
-- Includes window functions, such as `ROW_NUMBER`, `RANK`, etc.
-- Uses Common Table Expressions (CTEs) for improved readability.
-- Combines multiple aggregate functions.
-- Involves complex `WHERE` and `HAVING` clauses with multiple conditions.
-- Utilizes advanced functions and operators.
+complex_criterion = '''**Tiêu chí:**
+SQL mức Complex có thể thỏa một hoặc nhiều điều kiện sau:
+- Có nested subquery phức tạp.
+- Dùng nhiều loại JOIN, bao gồm self-join.
+- Có window function như `ROW_NUMBER`, `RANK`, v.v.
+- Dùng Common Table Expressions (CTE) để tăng tính dễ đọc.
+- Kết hợp nhiều hàm tổng hợp.
+- Có mệnh đề `WHERE` và `HAVING` phức tạp với nhiều điều kiện.
+- Dùng function và toán tử nâng cao.
 
-**Example of Complex SQL Query:**
+**Ví dụ SQL mức Complex:**
 ```sql
 WITH EmployeeCTE AS (
     SELECT employee_id, name, department_id, ROW_NUMBER() OVER (PARTITION BY department_id ORDER BY salary DESC) AS rank
@@ -77,18 +78,18 @@ INNER JOIN departments d ON e.department_id = d.department_id
 WHERE e.rank <= 3;
 ```'''
 
-highly_complex_criterion = '''**Criteria:**
-Highly complex SQL queries may satisfy one or more of the following criteria:
-- Includes multiple Common Table Expressions (CTEs) for readability.
-- Combines nested subqueries and various joins.
-- Utilizes recursive CTEs for hierarchical or recursive queries.
-- Extensively uses advanced window functions.
-- May involve `UNION` or `UNION ALL` to combine result sets.
-- Implements complex logic with advanced analytical functions.
-- Employs a wide range of SQL clauses and conditions.
-- Utilizes a broad spectrum of SQL functions and advanced features.
+highly_complex_criterion = '''**Tiêu chí:**
+SQL mức Highly Complex có thể thỏa một hoặc nhiều điều kiện sau:
+- Có nhiều CTE để tăng tính dễ đọc.
+- Kết hợp nested subquery và nhiều kiểu JOIN khác nhau.
+- Dùng recursive CTE cho truy vấn phân cấp hoặc đệ quy.
+- Sử dụng sâu các window function nâng cao.
+- Có thể dùng `UNION` hoặc `UNION ALL` để gộp tập kết quả.
+- Triển khai logic phức tạp với các hàm phân tích nâng cao.
+- Dùng phạm vi rộng các mệnh đề và điều kiện SQL.
+- Tận dụng phổ rộng các SQL function và tính năng nâng cao.
 
-**Example of Highly Complex SQL Query:**
+**Ví dụ SQL mức Highly Complex:**
 ```sql
 WITH RECURSIVE EmployeeHierarchy AS (
     SELECT employee_id, name, manager_id, department_id, 1 as level
@@ -172,6 +173,24 @@ def obtain_insert_statements(db_file_dir, table_names):
     return table_name2insert_statements
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max_dbs", type=int, default=0, help="0 means no limit")
+    # NOTE: The original implementation sampled a fixed number of SQLs per DB.
+    # For better table coverage, we also support sampling per table.
+    parser.add_argument(
+        "--samples_per_db",
+        type=int,
+        default=300,
+        help="Number of SQL prompts per DB (legacy mode). Ignored when --samples_per_table > 0.",
+    )
+    parser.add_argument(
+        "--samples_per_table",
+        type=int,
+        default=0,
+        help="If >0, generate N SQL prompts for EACH table in a DB. This encourages per-table coverage.",
+    )
+    opt = parser.parse_args()
+
     random.seed(42)
     db_path = "../database_synthesis/synthetic_sqlite_databases"
     prompt_template = open("./prompt_templates/sql_synthesis_prompt.txt", "r", encoding = "utf-8").read()
@@ -185,6 +204,8 @@ if __name__ == "__main__":
     }
 
     db_names = os.listdir(db_path)
+    if opt.max_dbs > 0:
+        db_names = db_names[:opt.max_dbs]
     prompts = []
     for db_name in tqdm(db_names):
         try:
@@ -192,7 +213,15 @@ if __name__ == "__main__":
             table_names, create_statements = obtain_db_schema(db_file_dir)
             table_name2insert_statements = obtain_insert_statements(db_file_dir, table_names)
 
-            for _ in range(0, 300):
+            # Decide how many prompts to generate.
+            if opt.samples_per_table and opt.samples_per_table > 0:
+                table_targets = []
+                for tn in table_names:
+                    table_targets.extend([tn] * opt.samples_per_table)
+            else:
+                table_targets = [None] * opt.samples_per_db
+
+            for target_table in table_targets:
                 complexity = random.sample(["Simple", "Moderate", "Complex", "Highly Complex"], 1)[0] 
 
                 insert_statements = []
@@ -208,7 +237,7 @@ if __name__ == "__main__":
 
                 function_num = random.randint(0, 2)
                 if function_num == 0:
-                    sql_function_prompt = "### SQL Functions\nYou can use any function supported by the database engine."
+                    sql_function_prompt = "### SQL Functions\nBạn có thể dùng bất kỳ function nào được hệ quản trị cơ sở dữ liệu hỗ trợ."
                 else:
                     sql_funcs = ""
                     sampled_functions = random.sample(functions, function_num)
@@ -217,7 +246,19 @@ if __name__ == "__main__":
                     sql_function_prompt = sql_func_template.format(sql_funcs = sql_funcs)
 
                 column_count = np.random.geometric(0.6, 1)[0]
-                prompt = prompt_template.format(
+
+                # Encourage table coverage: force the SQL to use a specific table.
+                if target_table:
+                    table_constraint = (
+                        "\n\n"
+                        "### Ràng buộc bắt buộc về bảng\n"
+                        f"- Câu SQL BẮT BUỘC phải sử dụng bảng `{target_table}`.\n"
+                        f"- Bảng `{target_table}` phải xuất hiện rõ ràng trong mệnh đề `FROM` hoặc `JOIN`.\n"
+                    )
+                else:
+                    table_constraint = ""
+
+                prompt = (prompt_template + table_constraint).format(
                     schema_str = "\n\n".join(create_statements),
                     sql_function_prompt = sql_function_prompt.strip(),
                     db_value_prompt = db_value_prompt.strip(),
@@ -227,7 +268,15 @@ if __name__ == "__main__":
                     column_count = column_count
                 )
 
-                prompts.append({"prompt": prompt, "db_id": db_name})
+                prompts.append(
+                    {
+                        "prompt": prompt,
+                        "db_id": db_name,
+                        "target_table": target_table,
+                        "complexity": complexity,
+                        "column_count": int(column_count),
+                    }
+                )
         except Exception as e:
             print(e)
 
